@@ -1,0 +1,43 @@
+menu "Wi-Fi Configuration"
+
+    config ESP_WIFI_SSID
+        string "WiFi SSID"
+        default "YOUR_WIFI_SSID"
+        help
+            SSID of the home Wi-Fi network to connect to.
+
+    config ESP_WIFI_PASSWORD
+        string "WiFi Password"
+        default "YOUR_WIFI_PASSWORD"
+        help
+            Password for the home Wi-Fi network (WPA/WPA2/WPA3).
+
+    config ESP_MAXIMUM_RETRY
+        int "Maximum retry attempts"
+        default 5
+        help
+            Maximum retry attempts before failing Wi-Fi connection.
+
+endmenu
+
+menu "Connectivity Test Configuration"
+
+    config CONNECTIVITY_TEST_URL
+        string "HTTP Connectivity Check URL"
+        default "http://connectivitycheck.gstatic.com/generate_204"
+        help
+            HTTP URL used to test basic internet connectivity (expects 204 or 200).
+
+    config PUBLIC_IP_TEST_URL
+        string "Public IP Lookup URL"
+        default "http://api.ipify.org"
+        help
+            HTTP URL used to query external public IP address.
+
+    config HTTPS_TEST_URL
+        string "HTTPS (TLS) Test URL"
+        default "https://httpbin.org/get"
+        help
+            HTTPS URL to test TLS handshake and root certificate bundle validation.
+
+endmenu
