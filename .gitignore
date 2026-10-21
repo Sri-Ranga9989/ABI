@@ -4,6 +4,10 @@ build/
 *.elf
 *.map
 
+# Audio recordings folder
+recordings/
+*.wav
+
 # Local configuration overrides (sdkconfig.defaults is tracked)
 sdkconfig
 sdkconfig.old

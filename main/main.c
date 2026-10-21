@@ -15,24 +15,21 @@
 #include "esp_http_client.h"
 
 #include "wifi_config.h"
+#include "audio_recorder.h"
+#include "st7735.h"
 
-static const char *TAG = "ABI_LLM";
+static const char *TAG = "ABI_APP";
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_num = 0;
 
-/* LLM Configuration */
-#define LLM_ENDPOINT_URL "http://192.168.1.7:20127/v1/chat/completions"
-#define LLM_API_TOKEN    "YOUR_LLM_API_TOKEN"
-#define LLM_POST_BODY    "{\"model\": \"oc/muse-spark-1.2-contributor-free\", \"messages\": [{\"role\": \"user\", \"content\": \"tell me a single line dad joke\"}]}"
-
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        ESP_LOGI(TAG, "Connecting to Wi-Fi SSID: \"%s\"...", ACTIVE_WIFI_SSID);
+        ESP_LOGI(TAG, "Connecting to Home Wi-Fi SSID: \"%s\"...", ACTIVE_WIFI_SSID);
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_retry_num < CONFIG_ESP_MAXIMUM_RETRY) {
@@ -40,23 +37,31 @@ static void event_handler(void *arg, esp_event_base_t event_base,
             ESP_LOGW(TAG, "Wi-Fi disconnected. Reconnecting (%d/%d)...", s_retry_num, CONFIG_ESP_MAXIMUM_RETRY);
             esp_wifi_connect();
         } else {
-            ESP_LOGE(TAG, "Failed to connect to Wi-Fi \"%s\".", ACTIVE_WIFI_SSID);
+            ESP_LOGW(TAG, "Home Wi-Fi connection failed. SoftAP hotspot is still active!");
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Wi-Fi Connected! Assigned IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "\n=======================================================");
+        ESP_LOGI(TAG, " Home Wi-Fi Connected! IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, " Browser URL: http://" IPSTR "/", IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "=======================================================\n");
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
+        ESP_LOGI(TAG, "Device connected to ABI-RECORDER hotspot!");
     }
 }
 
-static void wifi_init_sta(void)
+static void wifi_init_dual_mode(void)
 {
     s_wifi_event_group = xEventGroupCreate();
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // Create both Access Point and Station network interfaces
+    esp_netif_create_default_wifi_ap();
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -75,85 +80,49 @@ static void wifi_init_sta(void)
                                                         NULL,
                                                         &instance_got_ip));
 
-    wifi_config_t wifi_config = {
-        .sta = {
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-            .sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
+    // Access Point (Hotspot) Configuration
+    wifi_config_t ap_config = {
+        .ap = {
+            .ssid = "ABI-RECORDER",
+            .ssid_len = strlen("ABI-RECORDER"),
+            .channel = 1,
+            .password = "", // Open network - no password needed!
+            .max_connection = 4,
+            .authmode = WIFI_AUTH_OPEN,
         },
     };
-    strncpy((char *)wifi_config.sta.ssid, ACTIVE_WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
-    strncpy((char *)wifi_config.sta.password, ACTIVE_WIFI_PASS, sizeof(wifi_config.sta.password) - 1);
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-}
+    bool has_home_wifi = (strcmp(ACTIVE_WIFI_SSID, "YOUR_WIFI_SSID") != 0 && strlen(ACTIVE_WIFI_SSID) > 0);
 
-static esp_err_t http_event_handler(esp_http_client_event_t *evt)
-{
-    switch (evt->event_id) {
-    case HTTP_EVENT_ON_DATA:
-        // Stream raw response chunk directly to serial monitor output
-        printf("%.*s", evt->data_len, (char *)evt->data);
-        fflush(stdout);
-        break;
-    default:
-        break;
-    }
-    return ESP_OK;
-}
+    if (has_home_wifi) {
+        wifi_config_t sta_config = {
+            .sta = {
+                .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+                .sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
+            },
+        };
+        strncpy((char *)sta_config.sta.ssid, ACTIVE_WIFI_SSID, sizeof(sta_config.sta.ssid) - 1);
+        strncpy((char *)sta_config.sta.password, ACTIVE_WIFI_PASS, sizeof(sta_config.sta.password) - 1);
 
-static void send_chat_completion_request(void)
-{
-    ESP_LOGI(TAG, "\n=======================================================");
-    ESP_LOGI(TAG, "Sending HTTP POST Request to LLM Endpoint");
-    ESP_LOGI(TAG, "URL:     %s", LLM_ENDPOINT_URL);
-    ESP_LOGI(TAG, "Payload: %s", LLM_POST_BODY);
-    ESP_LOGI(TAG, "=======================================================\n");
-
-    esp_http_client_config_t config = {
-        .url = LLM_ENDPOINT_URL,
-        .method = HTTP_METHOD_POST,
-        .event_handler = http_event_handler,
-        .timeout_ms = 30000,
-        .buffer_size = 4096,
-        .buffer_size_tx = 2048,
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE(TAG, "Failed to initialize HTTP client");
-        return;
-    }
-
-    char auth_header[128];
-    snprintf(auth_header, sizeof(auth_header), "Bearer %s", LLM_API_TOKEN);
-
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, "Authorization", auth_header);
-    esp_http_client_set_post_field(client, LLM_POST_BODY, strlen(LLM_POST_BODY));
-
-    printf("\n>>> RAW LLM RESPONSE START >>>\n");
-    esp_err_t err = esp_http_client_perform(client);
-    printf("\n<<< RAW LLM RESPONSE END <<<\n\n");
-
-    if (err == ESP_OK) {
-        int status = esp_http_client_get_status_code(client);
-        int64_t len = esp_http_client_get_content_length(client);
-        ESP_LOGI(TAG, "HTTP Request Succeeded! Status: %d, Content-Length: %lld", status, len);
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
     } else {
-        ESP_LOGE(TAG, "HTTP Request Failed: %s", esp_err_to_name(err));
-        ESP_LOGW(TAG, "Verify that 192.168.1.7:20127 is reachable and listening on your local network.");
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     }
 
-    esp_http_client_cleanup(client);
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Start HTTP Web Server on port 80 immediately
+    audio_recorder_start_webserver();
 }
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Starting Abi AI Assistant - Simple LLM Completion Test");
+    ESP_LOGI(TAG, "Starting Abi AI Assistant Firmware...");
 
-    // Initialize NVS
+    // 1. Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -161,25 +130,47 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // Initialize Wi-Fi
-    wifi_init_sta();
+    // 2. Initialize Hardware Subsystem (INMP441 Mic + Button + SPIFFS Storage)
+    ESP_ERROR_CHECK(audio_recorder_init());
 
-    // Wait for Wi-Fi connection
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE,
-                                           pdFALSE,
-                                           portMAX_DELAY);
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Ready for network request.");
-        // Give network stack a brief moment to settle
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        // Perform the POST request and show raw response
-        send_chat_completion_request();
+    // 3. Initialize ST7735 TFT Display (GPIO 11, 15, 16, 17, 18)
+    st7735_config_t tft_cfg = {
+        .cs_pin = ST7735_PIN_CS,      // GPIO 11
+        .rst_pin = ST7735_PIN_RST,    // GPIO 17
+        .dc_pin = ST7735_PIN_DC,      // GPIO 18
+        .mosi_pin = ST7735_PIN_MOSI,  // GPIO 15
+        .sclk_pin = ST7735_PIN_SCLK,  // GPIO 16
+        .tab_type = ST7735_INIT_REDTAB, // Red Tab (0,0 offset - eliminates edge noise)
+        .rotation = 1,                 // 160x128 Landscape
+        .colstart = 0,                 // Explicit 0 column offset
+        .rowstart = 0,                 // Explicit 0 row offset
+    };
+    esp_err_t tft_ret = st7735_init(&tft_cfg);
+    if (tft_ret == ESP_OK) {
+        ESP_LOGI(TAG, "ST7735 initialized successfully! Launching Screen Test Suite...");
+        st7735_start_test_task();
     } else {
-        ESP_LOGE(TAG, "Wi-Fi connection failed. Cannot send POST request.");
+        ESP_LOGW(TAG, "ST7735 initialization returned: %s", esp_err_to_name(tft_ret));
     }
 
-    ESP_LOGI(TAG, "Done. System idle.");
+    // 4. Start Wi-Fi (SoftAP Hotspot "ABI-RECORDER" + Home Wi-Fi STA if configured)
+    wifi_init_dual_mode();
+
+    ESP_LOGI(TAG, "\n"
+        "******************************************************************\n"
+        "             ABI VOICE RECORDER SYSTEM INITIALIZED                \n"
+        "******************************************************************\n"
+        "  - Microphone: INMP441 (SCK=GPIO 4, WS=GPIO 5, SD=GPIO 6)\n"
+        "  - Push Button: GPIO 7 (also on-board BOOT button GPIO 0)\n"
+        "  - Display:     ST7735 1.8\" SPI TFT (160x128 Landscape)\n"
+        "                 CS: GPIO 11, RST: GPIO 17, DC: GPIO 18\n"
+        "                 MOSI: GPIO 15, SCLK: GPIO 16, BL: 3.3V\n"
+        "  - Storage:     8 MB SPIFFS partition mounted at /storage\n"
+        "  - Audio:       16 kHz, 16-bit Mono PCM (.WAV)\n"
+        "\n"
+        "  🌐 BROWSER ACCESS:\n"
+        "  1. Connect PC or Phone Wi-Fi to: \"ABI-RECORDER\"\n"
+        "  2. Open in Chrome: http://192.168.4.1/\n"
+        "******************************************************************"
+    );
 }
