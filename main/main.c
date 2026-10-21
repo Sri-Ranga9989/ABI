@@ -147,8 +147,8 @@ void app_main(void)
     };
     esp_err_t tft_ret = st7735_init(&tft_cfg);
     if (tft_ret == ESP_OK) {
-        ESP_LOGI(TAG, "ST7735 initialized successfully! Launching Screen Test Suite...");
-        st7735_start_test_task();
+        ESP_LOGI(TAG, "ST7735 initialized successfully! Launching Screen Benchmark Suite...");
+        st7735_start_benchmark_task();
     } else {
         ESP_LOGW(TAG, "ST7735 initialization returned: %s", esp_err_to_name(tft_ret));
     }

@@ -176,6 +176,58 @@ void st7735_show_status(const char *header, const char *line1, const char *line2
  */
 void st7735_start_test_task(void);
 
+/* ==================== HARDWARE BENCHMARK & METRICS SUITE ==================== */
+
+typedef struct {
+    uint32_t spi_clock_hz;
+    uint32_t screen_width;
+    uint32_t screen_height;
+    uint32_t total_pixels;
+    uint32_t bytes_per_frame;
+    float theoretical_max_fps;
+
+    // Full-Screen Solid Color Fill (Raw SPI hardware bus throughput)
+    float solid_fill_fps;
+    float solid_fill_ms;
+    float solid_fill_mb_s;
+    float solid_fill_mpx_s;
+    float bus_efficiency_pct;
+
+    // Real-Time Dynamic Rainbow Gradient (Real-time HSV compute + DMA transmit)
+    float gradient_fps;
+    float gradient_ms;
+    float gradient_mb_s;
+
+    // Graphic primitives throughput
+    float fill_rects_per_sec;
+    float outline_rects_per_sec;
+    float fast_lines_per_sec;
+    float bresenham_lines_per_sec;
+    float single_pixels_per_sec;
+    float chars_per_sec;
+} st7735_benchmark_results_t;
+
+/**
+ * @brief Run the complete hardware benchmark suite (100 solid fills, 60 gradient frames, 1000s of primitives).
+ * @return st7735_benchmark_results_t Exact microsecond-calibrated metrics.
+ */
+st7735_benchmark_results_t st7735_run_benchmark(void);
+
+/**
+ * @brief Render a high-tech visual benchmark HUD scorecard directly on the ST7735 display.
+ */
+void st7735_display_benchmark_scorecard(const st7735_benchmark_results_t *res);
+
+/**
+ * @brief Print a structured ASCII performance report table to the serial console.
+ */
+void st7735_print_benchmark_report(const st7735_benchmark_results_t *res);
+
+/**
+ * @brief Start dedicated benchmark task that executes the benchmark suite and enters live stress monitoring.
+ */
+void st7735_start_benchmark_task(void);
+
 #ifdef __cplusplus
 }
 #endif

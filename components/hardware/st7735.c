@@ -209,7 +209,11 @@ static uint8_t s_rowstart = 0;
 static uint8_t s_xstart = 0;
 static uint8_t s_ystart = 0;
 static uint8_t s_rotation = 1;
-static uint8_t *s_line_dma_buf = NULL; // 160 * 2 bytes DMA buffer
+
+#define ST7735_DMA_BUF_LINES   16
+#define ST7735_DMA_BUF_PIXELS  (160 * ST7735_DMA_BUF_LINES)
+#define ST7735_DMA_BUF_SIZE    (ST7735_DMA_BUF_PIXELS * 2) // 5,120 bytes DMA buffer
+static uint8_t *s_line_dma_buf = NULL;
 
 static void st7735_write_cmd(uint8_t cmd)
 {
@@ -404,13 +408,13 @@ void st7735_fill_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color
     st7735_set_addr_window(x, y, x + w - 1, y + h - 1);
     uint8_t hi = (color >> 8) & 0xFF;
     uint8_t lo = color & 0xFF;
-    for (int i = 0; i < 160; i++) {
+    for (int i = 0; i < ST7735_DMA_BUF_PIXELS; i++) {
         s_line_dma_buf[i * 2] = hi;
         s_line_dma_buf[i * 2 + 1] = lo;
     }
     size_t total_pixels = (size_t)w * h;
     while (total_pixels > 0) {
-        size_t chunk = (total_pixels > 160) ? 160 : total_pixels;
+        size_t chunk = (total_pixels > ST7735_DMA_BUF_PIXELS) ? ST7735_DMA_BUF_PIXELS : total_pixels;
         st7735_write_data(s_line_dma_buf, chunk * 2);
         total_pixels -= chunk;
     }
@@ -745,13 +749,13 @@ void st7735_clear_full_ram(uint16_t color)
 
     uint8_t hi = (color >> 8) & 0xFF;
     uint8_t lo = color & 0xFF;
-    for (int i = 0; i < 160; i++) {
+    for (int i = 0; i < ST7735_DMA_BUF_PIXELS; i++) {
         s_line_dma_buf[i * 2] = hi;
         s_line_dma_buf[i * 2 + 1] = lo;
     }
     size_t total_pixels = 132 * 162;
     while (total_pixels > 0) {
-        size_t chunk = (total_pixels > 160) ? 160 : total_pixels;
+        size_t chunk = (total_pixels > ST7735_DMA_BUF_PIXELS) ? ST7735_DMA_BUF_PIXELS : total_pixels;
         st7735_write_data(s_line_dma_buf, chunk * 2);
         total_pixels -= chunk;
     }
@@ -766,8 +770,8 @@ esp_err_t st7735_init(const st7735_config_t *cfg)
     ESP_LOGI(TAG, "Pins: CS=%d, RST=%d, DC=%d, MOSI=%d, SCLK=%d",
              s_cfg.cs_pin, s_cfg.rst_pin, s_cfg.dc_pin, s_cfg.mosi_pin, s_cfg.sclk_pin);
 
-    // Allocate 160-pixel line DMA buffer
-    s_line_dma_buf = (uint8_t *)heap_caps_malloc(160 * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    // Allocate 16-line (5120 bytes) DMA buffer for high-throughput SPI transfers
+    s_line_dma_buf = (uint8_t *)heap_caps_malloc(ST7735_DMA_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!s_line_dma_buf) {
         ESP_LOGE(TAG, "Failed to allocate DMA buffer for ST7735");
         return ESP_ERR_NO_MEM;
@@ -861,4 +865,323 @@ esp_err_t st7735_init(const st7735_config_t *cfg)
     ESP_LOGI(TAG, "ST7735 Initialized (%dx%d, colstart=%d, rowstart=%d)",
              s_width, s_height, s_colstart, s_rowstart);
     return ESP_OK;
+}
+
+/* ==================== HARDWARE BENCHMARK SUITE IMPLEMENTATION ==================== */
+
+st7735_benchmark_results_t st7735_run_benchmark(void)
+{
+    st7735_benchmark_results_t res;
+    memset(&res, 0, sizeof(res));
+
+    res.spi_clock_hz = 20000000; // 20 MHz
+    res.screen_width = (uint32_t)s_width;
+    res.screen_height = (uint32_t)s_height;
+    res.total_pixels = (uint32_t)(s_width * s_height);
+    res.bytes_per_frame = res.total_pixels * 2;
+    // Theoretical max FPS = SPI clock (bits/sec) / (bytes_per_frame * 8 bits)
+    res.theoretical_max_fps = (float)res.spi_clock_hz / (float)(res.bytes_per_frame * 8);
+
+    ESP_LOGI(TAG, "=======================================================");
+    ESP_LOGI(TAG, " Starting ST7735 Hardware Benchmark Execution...");
+    ESP_LOGI(TAG, " Target: %dx%d (%lu px) @ %.1f MHz SPI (Limit: %.1f FPS)",
+             s_width, s_height, (unsigned long)res.total_pixels,
+             (float)res.spi_clock_hz / 1e6f, res.theoretical_max_fps);
+    ESP_LOGI(TAG, "=======================================================");
+
+    // -------------------------------------------------------------
+    // Test 1: Full-Screen Solid Color Fills (100 frames)
+    // -------------------------------------------------------------
+    const uint16_t test_colors[5] = { ST7735_RED, ST7735_GREEN, ST7735_BLUE, ST7735_WHITE, ST7735_BLACK };
+    const int solid_frames = 100;
+    int64_t t0 = esp_timer_get_time();
+    for (int i = 0; i < solid_frames; i++) {
+        st7735_fill_screen(test_colors[i % 5]);
+    }
+    int64_t t1 = esp_timer_get_time();
+    int64_t solid_time_us = t1 - t0;
+
+    res.solid_fill_fps = (float)(solid_frames * 1000000ULL) / (float)solid_time_us;
+    res.solid_fill_ms = ((float)solid_time_us / (float)solid_frames) / 1000.0f;
+    float total_mb = ((float)(solid_frames * res.bytes_per_frame)) / (1024.0f * 1024.0f);
+    res.solid_fill_mb_s = total_mb / ((float)solid_time_us / 1000000.0f);
+    res.solid_fill_mpx_s = ((float)(solid_frames * res.total_pixels) / 1e6f) / ((float)solid_time_us / 1000000.0f);
+    res.bus_efficiency_pct = (res.solid_fill_fps / res.theoretical_max_fps) * 100.0f;
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    // -------------------------------------------------------------
+    // Test 2: Dynamic Moving Rainbow Gradient (60 frames)
+    // -------------------------------------------------------------
+    const int grad_frames = 60;
+    t0 = esp_timer_get_time();
+    for (int i = 0; i < grad_frames; i++) {
+        st7735_draw_gradient((uint8_t)(i * 4));
+    }
+    t1 = esp_timer_get_time();
+    int64_t grad_time_us = t1 - t0;
+
+    res.gradient_fps = (float)(grad_frames * 1000000ULL) / (float)grad_time_us;
+    res.gradient_ms = ((float)grad_time_us / (float)grad_frames) / 1000.0f;
+    float grad_mb = ((float)(grad_frames * res.bytes_per_frame)) / (1024.0f * 1024.0f);
+    res.gradient_mb_s = grad_mb / ((float)grad_time_us / 1000000.0f);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    // -------------------------------------------------------------
+    // Test 3: Filled Rectangles (500 rects)
+    // -------------------------------------------------------------
+    st7735_fill_screen(ST7735_BLACK);
+    const int rect_count = 500;
+    t0 = esp_timer_get_time();
+    for (int i = 0; i < rect_count; i++) {
+        int16_t rx = (i * 37) % (s_width - 25);
+        int16_t ry = (i * 23) % (s_height - 25);
+        int16_t rw = 10 + (i * 13) % 35;
+        int16_t rh = 10 + (i * 17) % 35;
+        uint16_t rc = (uint16_t)(i * 31415);
+        st7735_fill_rect(rx, ry, rw, rh, rc);
+    }
+    t1 = esp_timer_get_time();
+    res.fill_rects_per_sec = (float)(rect_count * 1000000ULL) / (float)(t1 - t0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    // -------------------------------------------------------------
+    // Test 4: Outline Rectangles (500 rects)
+    // -------------------------------------------------------------
+    st7735_fill_screen(ST7735_BLACK);
+    t0 = esp_timer_get_time();
+    for (int i = 0; i < rect_count; i++) {
+        int16_t rx = (i * 37) % (s_width - 25);
+        int16_t ry = (i * 23) % (s_height - 25);
+        int16_t rw = 10 + (i * 13) % 35;
+        int16_t rh = 10 + (i * 17) % 35;
+        uint16_t rc = (uint16_t)(i * 14142);
+        st7735_draw_rect(rx, ry, rw, rh, rc);
+    }
+    t1 = esp_timer_get_time();
+    res.outline_rects_per_sec = (float)(rect_count * 1000000ULL) / (float)(t1 - t0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    // -------------------------------------------------------------
+    // Test 5: Fast Horizontal & Vertical Lines (1000 lines)
+    // -------------------------------------------------------------
+    st7735_fill_screen(ST7735_BLACK);
+    const int line_count = 1000;
+    t0 = esp_timer_get_time();
+    for (int i = 0; i < line_count; i++) {
+        if (i % 2 == 0) {
+            int16_t y = (i * 7) % s_height;
+            st7735_draw_fast_h_line(0, y, s_width, (uint16_t)(i * 7919));
+        } else {
+            int16_t x = (i * 11) % s_width;
+            st7735_draw_fast_v_line(x, 0, s_height, (uint16_t)(i * 6271));
+        }
+    }
+    t1 = esp_timer_get_time();
+    res.fast_lines_per_sec = (float)(line_count * 1000000ULL) / (float)(t1 - t0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    // -------------------------------------------------------------
+    // Test 6: Arbitrary Angle Bresenham Lines (1000 lines)
+    // -------------------------------------------------------------
+    st7735_fill_screen(ST7735_BLACK);
+    t0 = esp_timer_get_time();
+    for (int i = 0; i < line_count; i++) {
+        int16_t x0 = (i * 29) % s_width;
+        int16_t y0 = (i * 41) % s_height;
+        int16_t x1 = (s_width - 1) - ((i * 31) % s_width);
+        int16_t y1 = (s_height - 1) - ((i * 43) % s_height);
+        st7735_draw_line(x0, y0, x1, y1, (uint16_t)(i * 5437));
+    }
+    t1 = esp_timer_get_time();
+    res.bresenham_lines_per_sec = (float)(line_count * 1000000ULL) / (float)(t1 - t0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    // -------------------------------------------------------------
+    // Test 7: Text Rendering Throughput (1000 characters)
+    // -------------------------------------------------------------
+    st7735_fill_screen(ST7735_BLACK);
+    const int char_count = 1000;
+    t0 = esp_timer_get_time();
+    for (int i = 0; i < char_count; i++) {
+        int16_t cx = (i * 6) % (s_width - 6);
+        int16_t cy = ((i * 6) / (s_width - 6) * 8) % (s_height - 8);
+        char ch = (char)('!' + (i % 94));
+        st7735_draw_char(cx, cy, ch, ST7735_YELLOW, ST7735_BLACK, 1);
+    }
+    t1 = esp_timer_get_time();
+    res.chars_per_sec = (float)(char_count * 1000000ULL) / (float)(t1 - t0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    // -------------------------------------------------------------
+    // Test 8: Single-Pixel Transactions (1000 pixels)
+    // -------------------------------------------------------------
+    const int px_count = 1000;
+    t0 = esp_timer_get_time();
+    for (int i = 0; i < px_count; i++) {
+        int16_t px = (i * 47) % s_width;
+        int16_t py = (i * 59) % s_height;
+        st7735_draw_pixel(px, py, ST7735_WHITE);
+    }
+    t1 = esp_timer_get_time();
+    res.single_pixels_per_sec = (float)(px_count * 1000000ULL) / (float)(t1 - t0);
+
+    return res;
+}
+
+void st7735_display_benchmark_scorecard(const st7735_benchmark_results_t *res)
+{
+    st7735_fill_screen(ST7735_BLACK);
+
+    // Outer border & header banner
+    st7735_draw_rect(0, 0, s_width, s_height, ST7735_CYAN);
+    st7735_fill_rect(2, 2, s_width - 4, 18, ST7735_DARKCYAN);
+    st7735_draw_string(8, 7, "ST7735 BENCHMARK HUD", ST7735_WHITE, ST7735_DARKCYAN, 1);
+
+    char buf[48];
+    int y = 24;
+
+    // Solid Fill Metric
+    snprintf(buf, sizeof(buf), "Fill: %.1f FPS (%.1fms)", res->solid_fill_fps, res->solid_fill_ms);
+    st7735_draw_string(6, y, buf, ST7735_GREEN, ST7735_BLACK, 1);
+    y += 11;
+
+    // Bus Throughput
+    snprintf(buf, sizeof(buf), "SPI : %.2f MB/s (%.0f%%)", res->solid_fill_mb_s, res->bus_efficiency_pct);
+    st7735_draw_string(6, y, buf, ST7735_YELLOW, ST7735_BLACK, 1);
+    y += 11;
+
+    // Gradient Metric
+    snprintf(buf, sizeof(buf), "Grad: %.1f FPS (%.2fMB)", res->gradient_fps, res->gradient_mb_s);
+    st7735_draw_string(6, y, buf, ST7735_CYAN, ST7735_BLACK, 1);
+    y += 11;
+
+    // FillRects Throughput
+    snprintf(buf, sizeof(buf), "Rect: %.0f /sec", res->fill_rects_per_sec);
+    st7735_draw_string(6, y, buf, ST7735_WHITE, ST7735_BLACK, 1);
+    y += 11;
+
+    // Lines Throughput
+    snprintf(buf, sizeof(buf), "Line: %.0f /sec", res->fast_lines_per_sec);
+    st7735_draw_string(6, y, buf, ST7735_WHITE, ST7735_BLACK, 1);
+    y += 11;
+
+    // Text Rate
+    snprintf(buf, sizeof(buf), "Text: %.0f ch/s", res->chars_per_sec);
+    st7735_draw_string(6, y, buf, ST7735_ORANGE, ST7735_BLACK, 1);
+    y += 13;
+
+    // Visual Efficiency Bar Chart
+    st7735_draw_string(6, y, "BUS EFFICIENCY:", ST7735_GRAY, ST7735_BLACK, 1);
+    y += 10;
+    st7735_draw_rect(6, y, s_width - 12, 10, ST7735_WHITE);
+    int bar_max_w = s_width - 16;
+    int fill_w = (int)((res->bus_efficiency_pct / 100.0f) * bar_max_w);
+    if (fill_w > bar_max_w) fill_w = bar_max_w;
+    if (fill_w < 0) fill_w = 0;
+    st7735_fill_rect(8, y + 2, fill_w, 6, ST7735_GREEN);
+}
+
+void st7735_print_benchmark_report(const st7735_benchmark_results_t *res)
+{
+    printf("\n"
+        "================================================================================\n"
+        "             ESP32-S3 ST7735 HARDWARE BENCHMARK & PERFORMANCE METRICS           \n"
+        "================================================================================\n"
+        "  Target Display        : ST7735 1.8\" SPI TFT (Red Tab / (0,0) Offset)\n"
+        "  Active Resolution     : %lu x %lu (%lu pixels)\n"
+        "  Color Depth           : 16-bit RGB565 (2 bytes / pixel)\n"
+        "  Frame Size            : %lu Bytes (%.2f KB)\n"
+        "  SPI Master Bus        : SPI2_HOST (FSPI) with DMA channel AUTO\n"
+        "  SPI Bus Clock         : %.1f MHz (%lu Hz)\n"
+        "  Theoretical Limit     : %.2f FPS (%.3f MB/s bandwidth cap)\n"
+        "--------------------------------------------------------------------------------\n"
+        "  TEST CASE                         METRIC              THROUGHPUT / RATE       \n"
+        "--------------------------------------------------------------------------------\n"
+        "  Full-Screen Solid Fill (100 fr) : %6.1f FPS          %5.2f ms/frame          \n"
+        "  Hardware SPI Bus Throughput     : %6.3f MB/s         %5.2f Mpixels/sec       \n"
+        "  Hardware Bus Saturation         : %6.1f %% of theoretical maximum limit       \n"
+        "--------------------------------------------------------------------------------\n"
+        "  Dynamic Rainbow Gradient (60 fr): %6.1f FPS          %5.2f ms/frame          \n"
+        "  Real-time Compute + Transmit    : %6.3f MB/s         %5.2f Mpixels/sec       \n"
+        "--------------------------------------------------------------------------------\n"
+        "  Filled Rectangles (FillRect)    : %8.0f rects/sec                             \n"
+        "  Outline Rectangles (DrawRect)   : %8.0f rects/sec                             \n"
+        "  Fast Lines (H/V Polling Lines)  : %8.0f lines/sec                             \n"
+        "  Arbitrary Lines (Bresenham)     : %8.0f lines/sec                             \n"
+        "  Text Rendering (5x7 Font)       : %8.0f chars/sec                             \n"
+        "  Single Pixel SPI Transactions   : %8.0f pixels/sec                            \n"
+        "================================================================================\n\n",
+        (unsigned long)res->screen_width, (unsigned long)res->screen_height, (unsigned long)res->total_pixels,
+        (unsigned long)res->bytes_per_frame, (float)res->bytes_per_frame / 1024.0f,
+        (float)res->spi_clock_hz / 1e6f, (unsigned long)res->spi_clock_hz,
+        res->theoretical_max_fps, (float)res->spi_clock_hz / (8.0f * 1024.0f * 1024.0f),
+        res->solid_fill_fps, res->solid_fill_ms,
+        res->solid_fill_mb_s, res->solid_fill_mpx_s,
+        res->bus_efficiency_pct,
+        res->gradient_fps, res->gradient_ms,
+        res->gradient_mb_s, res->gradient_fps * (float)res->total_pixels / 1e6f,
+        res->fill_rects_per_sec,
+        res->outline_rects_per_sec,
+        res->fast_lines_per_sec,
+        res->bresenham_lines_per_sec,
+        res->chars_per_sec,
+        res->single_pixels_per_sec
+    );
+}
+
+static void st7735_benchmark_task_entry(void *pvParameters)
+{
+    // Small delay to let system initialize cleanly
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    while (1) {
+        // 1. Run full benchmark suite
+        st7735_benchmark_results_t res = st7735_run_benchmark();
+
+        // 2. Output detailed report to Serial Monitor
+        st7735_print_benchmark_report(&res);
+
+        // 3. Display scorecard HUD on LCD for 7 seconds
+        st7735_display_benchmark_scorecard(&res);
+        vTaskDelay(pdMS_TO_TICKS(7000));
+
+        // 4. Enter continuous live stress test loop with live FPS overlay (10 seconds)
+        ESP_LOGI(TAG, "Running live FPS stress monitoring loop (10s)...");
+        int64_t loop_start = esp_timer_get_time();
+        uint32_t frame_count = 0;
+        int64_t last_time = esp_timer_get_time();
+        float live_fps = 0.0f;
+        char fps_str[32];
+
+        while ((esp_timer_get_time() - loop_start) < 10000000ULL) { // 10 seconds
+            int64_t frame_start = esp_timer_get_time();
+
+            // Render animated rainbow gradient
+            st7735_draw_gradient((uint8_t)(frame_count * 3));
+
+            int64_t frame_end = esp_timer_get_time();
+            int64_t frame_us = frame_end - frame_start;
+            frame_count++;
+
+            // Update live FPS every 20 frames
+            if (frame_count % 20 == 0) {
+                int64_t now = esp_timer_get_time();
+                live_fps = (20.0f * 1000000.0f) / (float)(now - last_time);
+                last_time = now;
+            }
+
+            // Draw HUD overlay in corner: Live FPS and frame latency
+            float current_fps = live_fps > 0 ? live_fps : (1000000.0f / (float)frame_us);
+            snprintf(fps_str, sizeof(fps_str), "FPS:%.1f %dms", current_fps, (int)(frame_us / 1000));
+            st7735_fill_rect(2, 2, 92, 12, ST7735_BLACK);
+            st7735_draw_string(4, 4, fps_str, ST7735_GREEN, ST7735_BLACK, 1);
+
+            vTaskDelay(pdMS_TO_TICKS(10)); // Cooperative yield to IDLE task
+        }
+    }
+}
+
+void st7735_start_benchmark_task(void)
+{
+    xTaskCreatePinnedToCore(st7735_benchmark_task_entry, "tft_bench_task", 6144, NULL, 1, NULL, 1);
 }

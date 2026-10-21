@@ -68,6 +68,25 @@ You will see a dark-mode web dashboard with audio players to listen to recording
 
 ---
 
+## ST7735 Hardware Benchmark & Absolute Performance Metrics
+
+Empirical metrics measured directly on the physical hardware (**ESP32-S3 @ 240 MHz**, **SPI2_HOST @ 20.0 MHz** with DMA line buffering):
+
+| Benchmark Test | Measured Metric | Latency / Rate | Performance Notes |
+| :--- | :--- | :--- | :--- |
+| **Full-Screen Solid Fill (100 frames)** | **58.5 FPS** | **17.09 ms/frame** | Full 160×128 (20,480 px) frame push |
+| **Hardware SPI Bus Throughput** | **2.286 MB/s** | **1.20 Mpixels/sec** | Sustained DMA transfer rate |
+| **Hardware Bus Saturation** | **95.9 %** | — | Percentage of physical 20 MHz limit (2.384 MB/s cap) |
+| **Dynamic Rainbow Gradient (60 frames)**| **32.0 FPS** | **31.25 ms/frame** | Real-time HSV-to-RGB565 math + DMA transmit |
+| **Filled Rectangles (`fillRect`)** | **924 rects/sec** | — | Random dimensions & colors |
+| **Outline Rectangles (`drawRect`)** | **944 rects/sec** | — | Window containers & boxes |
+| **Fast Lines (H/V Polling Lines)** | **2,545 lines/sec**| — | Fast horizontal & vertical divider lines |
+| **Arbitrary Lines (Bresenham)** | **60 lines/sec** | — | Diagonal & multi-angle line drawing |
+| **Text Rendering (5×7 Font)** | **100 chars/sec** | — | Dynamic character rendering |
+| **Single-Pixel SPI Transactions** | **4,042 pixels/sec**| — | Individual transaction setup & draw |
+
+---
+
 ## Commands
 
 | Action | Command |
@@ -75,3 +94,4 @@ You will see a dark-mode web dashboard with audio players to listen to recording
 | **Build Firmware** | `.\build.bat` |
 | **Flash & Monitor** | `.\flash.bat` |
 | **Pull Files to PC** | `.\pull.bat` |
+| **Clear ESP32 Memory** | `.\clear.bat` |
